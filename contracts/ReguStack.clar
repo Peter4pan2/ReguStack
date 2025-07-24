@@ -128,3 +128,185 @@
     (get approved (map-get? regulatory-authorities {authority: authority, validation-type: validation-type}))
   )
 )
+
+
+
+
+;; Register a new equipment
+(define-public (register-equipment (equipment-id uint) (initial-phase uint))
+  (begin
+    (asserts! (is-valid-equipment-id equipment-id) ERR_INVALID_EQUIPMENT)
+    (asserts! (is-valid-phase initial-phase) ERR_INVALID_PHASE)
+    (asserts! (or (is-admin tx-sender) (is-eq initial-phase EQUIPMENT_PHASE_PRODUCED)) ERR_UNAUTHORIZED)
+
+    (map-set equipment-data 
+      {equipment-id: equipment-id}
+      {
+        owner: tx-sender,
+        current-phase: initial-phase,
+        timeline: (list {phase: initial-phase, timestamp: (get-current-time)})
+      }
+    )
+    (ok true)
+  )
+)
+
+;; Update equipment phase
+(define-public (update-equipment-phase (equipment-id uint) (new-phase uint))
+  (let 
+    (
+      (equipment (unwrap! (map-get? equipment-data {equipment-id: equipment-id}) ERR_INVALID_EQUIPMENT))
+    )
+    (asserts! (is-valid-equipment-id equipment-id) ERR_INVALID_EQUIPMENT)
+    (asserts! (is-valid-phase new-phase) ERR_INVALID_PHASE)
+    (asserts! 
+      (or 
+        (is-admin tx-sender)
+        (is-eq (get owner equipment) tx-sender)
+      ) 
+      ERR_UNAUTHORIZED
+    )
+
+    (map-set equipment-data 
+      {equipment-id: equipment-id}
+      (merge equipment 
+        {
+          current-phase: new-phase,
+          timeline: (unwrap-panic 
+            (as-max-len? 
+              (append (get timeline equipment) {phase: new-phase, timestamp: (get-current-time)}) 
+              u10
+            )
+          )
+        }
+      )
+    )
+    (ok true)
+  )
+)
+
+;; Validate authority principal
+(define-private (is-valid-authority (authority principal))
+  (and 
+    (not (is-eq authority (var-get admin-principal)))  ;; Authority can't be contract admin
+    (not (is-eq authority tx-sender))                 ;; Authority can't be the sender
+    (not (is-eq authority 'SP000000000000000000002Q6VF78))  ;; Not zero address
+  )
+)
+
+;; Add regulatory authority with additional validation
+(define-public (add-regulatory-authority (authority principal) (validation-type uint))
+  (begin
+    (asserts! (is-admin tx-sender) ERR_UNAUTHORIZED)
+    (asserts! (is-valid-validation-type validation-type) ERR_INVALID_VALIDATION)
+    (asserts! (is-valid-authority authority) ERR_UNAUTHORIZED)
+
+    ;; After validation, we can safely use the authority
+    (map-set regulatory-authorities
+      {authority: authority, validation-type: validation-type}
+      {approved: true}
+    )
+    (ok true)
+  )
+)
+
+;; Add validation to equipment
+(define-public (add-validation (equipment-id uint) (validation-type uint))
+  (begin
+    (asserts! (is-valid-equipment-id equipment-id) ERR_INVALID_EQUIPMENT)
+    (asserts! (is-valid-validation-type validation-type) ERR_INVALID_VALIDATION)
+    (asserts! (is-regulatory-authority tx-sender validation-type) ERR_UNAUTHORIZED)
+
+    (asserts! 
+      (is-none 
+        (map-get? equipment-validations {equipment-id: equipment-id, validation-type: validation-type})
+      )
+      ERR_VALIDATION_EXISTS
+    )
+
+    (let
+      ((validated-equipment-id equipment-id)
+       (validated-validation-type validation-type))
+      (map-set equipment-validations
+        {equipment-id: validated-equipment-id, validation-type: validated-validation-type}
+        {
+          validator: tx-sender,
+          timestamp: (get-current-time),
+          active: true
+        }
+      )
+      (ok true)
+    )
+  )
+)
+
+;; Verify equipment validation
+(define-read-only (verify-validation (equipment-id uint) (validation-type uint))
+  (let
+    (
+      (validation (unwrap! 
+        (map-get? equipment-validations {equipment-id: equipment-id, validation-type: validation-type})
+        ERR_INVALID_VALIDATION
+      ))
+    )
+    (ok (get active validation))
+  )
+)
+
+;; Revoke validation
+(define-public (revoke-validation (equipment-id uint) (validation-type uint))
+  (begin
+    (asserts! (is-valid-equipment-id equipment-id) ERR_INVALID_EQUIPMENT)
+    (asserts! (is-valid-validation-type validation-type) ERR_INVALID_VALIDATION)
+
+    (let
+      (
+        (validation (unwrap! 
+          (map-get? equipment-validations {equipment-id: equipment-id, validation-type: validation-type})
+          ERR_INVALID_VALIDATION
+        ))
+        (validated-equipment-id equipment-id)
+        (validated-validation-type validation-type)
+      )
+      (asserts! 
+        (or
+          (is-admin tx-sender)
+          (is-eq (get validator validation) tx-sender)
+        )
+        ERR_UNAUTHORIZED
+      )
+
+      (map-set equipment-validations
+        {equipment-id: validated-equipment-id, validation-type: validated-validation-type}
+        (merge validation {active: false})
+      )
+      (ok true)
+    )
+  )
+)
+
+;; Get equipment timeline
+(define-read-only (get-equipment-timeline (equipment-id uint))
+  (let 
+    (
+      (equipment (unwrap! (map-get? equipment-data {equipment-id: equipment-id}) ERR_INVALID_EQUIPMENT))
+    )
+    (ok (get timeline equipment))
+  )
+)
+
+;; Get current equipment phase
+(define-read-only (get-equipment-phase (equipment-id uint))
+  (let 
+    (
+      (equipment (unwrap! (map-get? equipment-data {equipment-id: equipment-id}) ERR_INVALID_EQUIPMENT))
+    )
+    (ok (get current-phase equipment))
+  )
+)
+
+;; Get validation details
+(define-read-only (get-validation-details (equipment-id uint) (validation-type uint))
+  (ok (map-get? equipment-validations {equipment-id: equipment-id, validation-type: validation-type}))
+)
+
